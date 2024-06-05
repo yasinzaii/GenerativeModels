@@ -72,6 +72,44 @@ def _scaled_linear_beta(num_train_timesteps: int, beta_start: float = 1e-4, beta
     return torch.linspace(beta_start**0.5, beta_end**0.5, num_train_timesteps, dtype=torch.float32) ** 2
 
 
+@NoiseSchedules.add_def("scaled_linear_beta_0_SNR", "Scaled linear beta schedule 0 SNR")
+def _scaled_linear_beta_0snr(num_train_timesteps: int, beta_start: float = 1e-4, beta_end: float = 2e-2):
+    """
+    Scaled linear beta noise schedule function with 0 SNR.
+
+    Args:
+        num_train_timesteps: number of timesteps
+        beta_start: start of beta range, default 1e-4
+        beta_end: end of beta range, default 2e-2
+
+    Returns:
+        betas: beta schedule tensor [0 SNR]
+    """
+    betas_scaled = torch.linspace(beta_start**0.5, beta_end**0.5, num_train_timesteps, dtype=torch.float32) ** 2
+
+    # Convert betas to alphas_bar_sqrt
+    alphas = 1 - betas_scaled
+    alphas_bar = alphas.cumprod(0)
+    alphas_bar_sqrt = alphas_bar.sqrt()
+
+    # Store old values.
+    alphas_bar_sqrt_0 = alphas_bar_sqrt[0].clone()
+    alphas_bar_sqrt_T = alphas_bar_sqrt[-1].clone()
+    # Shift so last timestep is zero.
+    alphas_bar_sqrt -= alphas_bar_sqrt_T
+    # Scale so first timestep is back to old value.
+    alphas_bar_sqrt *= alphas_bar_sqrt_0 / (alphas_bar_sqrt_0 - alphas_bar_sqrt_T)
+
+    # Convert alphas_bar_sqrt to betas
+    alphas_bar = alphas_bar_sqrt ** 2
+    alphas = alphas_bar[1:] / alphas_bar[:-1]
+    alphas = torch.cat([alphas_bar[0:1], alphas])
+    betas = 1 - alphas
+    return betas
+
+
+
+
 @NoiseSchedules.add_def("sigmoid_beta", "Sigmoid beta schedule")
 def _sigmoid_beta(num_train_timesteps: int, beta_start: float = 1e-4, beta_end: float = 2e-2, sig_range: float = 6):
     """
@@ -108,6 +146,39 @@ def _cosine_beta(num_train_timesteps: int, s: float = 8e-3):
     alphas = torch.clip(alphas_cumprod[1:] / alphas_cumprod[:-1], 0.0001, 0.9999)
     betas = 1.0 - alphas
     return betas, alphas, alphas_cumprod[:-1]
+
+
+def betas_for_alpha_bar(num_diffusion_timesteps, alpha_bar, max_beta=0.999):
+    """
+    Create a beta schedule that discretizes the given alpha_t_bar function,
+    which defines the cumulative product of (1-beta) over time from t = [0,1].
+    
+    :param num_diffusion_timesteps: the number of betas to produce.
+    :param alpha_bar: a lambda that takes an argument t from 0 to 1 and
+                      produces the cumulative product of (1-beta) up to that
+                      part of the diffusion process.
+    :param max_beta: the maximum beta to use; use values lower than 1 to
+                     prevent singularities.
+    """
+    betas = []
+    for i in range(num_diffusion_timesteps):
+        t1 = i / num_diffusion_timesteps
+        t2 = (i + 1) / num_diffusion_timesteps
+        betas.append(min(1 - alpha_bar(t2) / alpha_bar(t1), max_beta))
+    return torch.tensor(betas)
+
+
+@NoiseSchedules.add_def("cosine_fixed", "Cosine Scaled schedule")
+def _cosine_beta_fixed(num_train_timesteps: int, s: float = 8e-3):
+    """
+    Cosine noise Fixed
+    """
+    return betas_for_alpha_bar(
+        num_train_timesteps,
+        lambda t: torch.cos((t + s) / (1 + s) * torch.pi / 2) 
+    )
+
+
 
 
 class Scheduler(nn.Module):
