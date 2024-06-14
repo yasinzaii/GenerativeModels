@@ -23,6 +23,9 @@ from monai.inferers import Inferer
 from monai.transforms import CenterSpatialCrop, SpatialPad
 from monai.utils import optional_import
 
+# Imported Just for "v_prediction check" to also output v_target
+from generative.networks.schedulers.ddpm import DDPMPredictionType
+
 from generative.networks.nets import VQVAE, SPADEAutoencoderKL, SPADEDiffusionModelUNet
 
 tqdm, has_tqdm = optional_import("tqdm", name="tqdm")
@@ -384,6 +387,8 @@ class LatentDiffusionInferer(DiffusionInferer):
             if isinstance(autoencoder_model, VQVAE):
                 autoencode = partial(autoencoder_model.encode_stage_2_inputs, quantized=quantized)
             latent = autoencode(inputs) * self.scale_factor
+            # Calculating v-prediction target
+            v_target = self.scheduler.get_velocity(latent, noise, timesteps)
 
         if self.ldm_latent_shape is not None:
             latent = torch.stack([self.ldm_resizer(i) for i in decollate_batch(latent)], 0)
@@ -400,6 +405,11 @@ class LatentDiffusionInferer(DiffusionInferer):
             condition=condition,
             mode=mode,
         )
+        
+        # for Latent v-prediction return v_target along with v_prediction
+        if self.scheduler.prediction_type == DDPMPredictionType.V_PREDICTION:
+            return prediction, v_target
+        
         return prediction
 
     @torch.no_grad()
@@ -476,12 +486,14 @@ class LatentDiffusionInferer(DiffusionInferer):
 
         if save_intermediates:
             intermediates = []
+            z_intermediates = []
             for latent_intermediate in latent_intermediates:
                 decode = autoencoder_model.decode_stage_2_outputs
                 if isinstance(autoencoder_model, SPADEAutoencoderKL):
                     decode = partial(autoencoder_model.decode_stage_2_outputs, seg=seg)
+                z_intermediates.append(latent_intermediate)
                 intermediates.append(decode(latent_intermediate / self.scale_factor))
-            return image, intermediates
+            return image, intermediates, z_intermediates
 
         else:
             return image
